@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Draw Hashmap — Geohash6 网格计算</title>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<!-- Leaflet.draw CSS -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+#app { display:flex; height:100%; }
+
+/* ---- sidebar ---- */
+#sidebar {
+  width: 340px; min-width: 280px;
+  background: #fff; border-right:1px solid #e5e7eb;
+  display:flex; flex-direction:column;
+  z-index:1001; overflow:hidden;
+}
+#sidebar-head {
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #f3f4f6;
+}
+#sidebar-head h1 {
+  font-size: 18px; font-weight: 700; color: #111827;
+}
+#sidebar-head p {
+  font-size: 12px; color: #9ca3af; margin-top: 2px;
+}
+
+.toolbar {
+  padding: 12px 20px;
+  display:flex; flex-direction:column; gap: 6px;
+}
+.toolbar-row {
+  display:flex; gap: 6px;
+}
+.btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  padding: 8px 14px; border:1px solid #d1d5db; border-radius: 6px;
+  background:#fff; cursor:pointer; font-size:13px; font-weight:500;
+  color:#374151; transition: background .12s, border-color .12s;
+  white-space: nowrap;
+}
+.btn:hover { background:#f9fafb; border-color:#9ca3af; }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.btn-accent { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+.btn-accent:hover { background:#2563eb; }
+.btn-accent:disabled { background:#93c5fd; border-color:#93c5fd; }
+.btn-danger { color:#ef4444; }
+.btn-danger:hover { background:#fef2f2; border-color:#ef4444; }
+
+.btn-sm { padding:4px 10px; font-size:11px; }
+
+/* precision radio */
+.prec-opt {
+  display:inline-flex; align-items:center; cursor:pointer;
+  padding:3px 10px; border:1px solid #d1d5db; border-radius:5px;
+  font-size:13px; font-weight:600; color:#6b7280;
+  user-select:none; transition: all .12s;
+}
+.prec-opt:hover { border-color:#9ca3af; }
+.prec-opt input { display:none; }
+.prec-opt:has(input:checked) {
+  background:#3b82f6; color:#fff; border-color:#3b82f6;
+}
+
+/* ---- results ---- */
+#results { flex:1; overflow-y:auto; border-top:1px solid #e5e7eb; }
+.results-head {
+  padding:12px 20px; border-bottom:1px solid #f3f4f6;
+  display:flex; justify-content:space-between; align-items:center;
+  position:sticky; top:0; background:#fff; z-index:1;
+}
+.results-head h2 { font-size:14px; font-weight:600; color:#374151; }
+.badge {
+  font-size:11px; color:#6b7280; background:#f3f4f6;
+  padding:2px 8px; border-radius:10px;
+}
+.legend { padding:4px 20px 8px; font-size:11px; color:#9ca3af; }
+.legend span { display:inline-flex; align-items:center; margin-right:10px; }
+.legend .swatch {
+  display:inline-block; width:12px; height:12px; border-radius:2px; margin-right:4px;
+}
+
+#cell-list { padding:4px 8px 12px; }
+#cell-list .empty {
+  text-align:center; color:#d1d5db; font-size:13px; padding:24px 0;
+}
+.cell-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:5px 12px; border-radius:5px; cursor:pointer;
+  font-size:13px; font-family:"JetBrains Mono","Cascadia Code",monospace;
+  margin:2px 0; transition: background .1s;
+}
+.cell-row:hover { background:#f3f4f6; }
+.cell-row .dot {
+  width:10px; height:10px; border-radius:2px; margin-right:8px; flex-shrink:0;
+}
+.cell-row .meta {
+  font-size:10px; color:#9ca3af; white-space:nowrap;
+}
+
+/* ---- map ---- */
+#map { flex:1; height:100%; }
+
+/* ---- toast ---- */
+#toast {
+  position:fixed; top:18px; right:18px; z-index:9999;
+  padding:10px 20px; border-radius:8px; font-size:13px; color:#fff;
+  opacity:0; transform:translateY(-8px);
+  transition: opacity .25s, transform .25s;
+  pointer-events:none;
+}
+#toast.on { opacity:1; transform:translateY(0); }
+#toast.ok  { background:#10b981; }
+#toast.err { background:#ef4444; }
+
+/* ---- responsive ---- */
+@media (max-width:720px) {
+  #app { flex-direction:column; }
+  #sidebar { width:100%; max-height:45%; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ============= SIDEBAR ============= -->
+  <div id="sidebar">
+    <div id="sidebar-head">
+      <h1>Geohash 网格计算</h1>
+      <p>绘制多边形 → 计算命中的 geohash 网格</p>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <button id="btn-draw"   class="btn btn-accent" style="flex:1">✏️ 绘制多边形</button>
+        <button id="btn-rect"   class="btn">⬜ 矩形</button>
+      </div>
+      <div class="toolbar-row" style="align-items:center; gap:8px; padding-top:2px;">
+        <span style="font-size:12px; color:#6b7280; white-space:nowrap;">精度:</span>
+        <label class="prec-opt"><input type="radio" name="precision" value="6" checked><span>6</span></label>
+        <label class="prec-opt"><input type="radio" name="precision" value="7"><span>7</span></label>
+      </div>
+      <div class="toolbar-row">
+        <button id="btn-compute" class="btn btn-accent" style="flex:1" disabled>🔍 计算网格</button>
+        <button id="btn-clear"   class="btn btn-danger">🗑️ 清除</button>
+      </div>
+    </div>
+
+    <div id="results">
+      <div class="results-head">
+        <h2>命中网格</h2>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="badge" id="cell-count">—</span>
+          <button id="btn-export" class="btn btn-sm" disabled>📥 导出</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="swatch" style="background:#3b82f6"></i>绘制区域</span>
+        <span><i class="swatch" style="background:rgba(16,185,129,.5)"></i>命中网格</span>
+      </div>
+      <div id="cell-list"><div class="empty">绘制多边形后点击「计算网格」</div></div>
+    </div>
+  </div>
+
+  <!-- ============= MAP ============= -->
+  <div id="map"></div>
+</div>
+
+<div id="toast"></div>
+
+<!-- ============= SCRIPTS ============= -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+<script>
+// ----- state -----------------------------------------------------------
+const drawnPolys = [];        // L.Polygon[]
+let   computedCells = [];     // from API
+let   cellLayer;
+let   polyColorIdx = 0;
+
+const COLORS = ['#3b82f6','#ef4444','#f59e0b','#8b5cf6','#10b981','#ec4899'];
+function nextColor(){ return COLORS[polyColorIdx++ % COLORS.length]; }
+
+// ----- map -------------------------------------------------------------
+const map = L.map('map').setView([35, 105], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OSM',
+  maxZoom: 19,
+}).addTo(map);
+
+const drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
+cellLayer = L.layerGroup().addTo(map);
+
+// ----- draw control ----------------------------------------------------
+const drawControl = new L.Control.Draw({
+  draw: {
+    polygon: {
+      allowIntersection: false,
+      showArea: true,
+      shapeOptions: { color: COLORS[0], weight: 2, fillOpacity: 0.12 },
+    },
+    rectangle: {
+      shapeOptions: { color: COLORS[0], weight: 2, fillOpacity: 0.12 },
+    },
+    polyline: false, circle: false, circlemarker: false, marker: false,
+  },
+  edit: { featureGroup: drawnItems, remove: true },
+});
+map.addControl(drawControl);
+
+// ---- events ----
+map.on(L.Draw.Event.CREATED, e => {
+  const layer = e.layer;
+  const color = nextColor();
+  layer.setStyle({ color, fillColor: color });
+  drawnItems.addLayer(layer);
+  drawnPolys.push(layer);
+  refreshUI();
+});
+
+map.on(L.Draw.Event.DELETED, e => {
+  const removed = new Set();
+  e.layers.eachLayer(l => removed.add(l._leaflet_id));
+  for (let i = drawnPolys.length-1; i >= 0; i--) {
+    if (removed.has(drawnPolys[i]._leaflet_id)) drawnPolys.splice(i,1);
+  }
+  refreshUI();
+});
+
+// ----- buttons ---------------------------------------------------------
+document.getElementById('btn-draw').onclick = () => {
+  new L.Draw.Polygon(map, {
+    allowIntersection: false, showArea: true,
+    shapeOptions: { color: nextColor(), weight: 2, fillOpacity: 0.12 },
+  }).enable();
+};
+
+document.getElementById('btn-rect').onclick = () => {
+  new L.Draw.Rectangle(map, {
+    shapeOptions: { color: nextColor(), weight: 2, fillOpacity: 0.12 },
+  }).enable();
+};
+
+document.getElementById('btn-clear').onclick = () => {
+  drawnItems.clearLayers();
+  drawnPolys.length = 0;
+  cellLayer.clearLayers();
+  computedCells = [];
+  polyColorIdx = 0;
+  document.getElementById('btn-export').disabled = true;
+  refreshUI();
+  toast('已清除', 'ok');
+};
+
+document.getElementById('btn-compute').onclick = async () => {
+  const polys = drawnPolys.map(p => {
+    const latlngs = p.getLatLngs();
+    const ring = Array.isArray(latlngs[0]) ? latlngs[0] : latlngs;
+    return ring.map(ll => [ll.lat, ll.lng]);
+  });
+
+  const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
+
+  const btn = document.getElementById('btn-compute');
+  btn.disabled = true;
+  btn.textContent = '⏳ 计算中…';
+
+  try {
+    const resp = await fetch('/api/compute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polygons: polys, precision }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || '请求失败');
+    }
+    const data = await resp.json();
+    computedCells = data.cells;
+
+    // draw cells on map
+    cellLayer.clearLayers();
+    for (const c of computedCells) {
+      const rect = L.rectangle([[c.sw[0],c.sw[1]],[c.ne[0],c.ne[1]]], {
+        color: '#10b981', weight: 1.5, fillColor: '#10b981', fillOpacity: 0.35,
+      });
+      rect.bindTooltip(c.geohash, { direction:'center', className:'cell-tt' });
+      cellLayer.addLayer(rect);
+    }
+
+    renderCells(computedCells);
+    toast(`计算完成：${computedCells.length} 个 geohash${precision} 网格`, 'ok');
+
+    // fit view
+    if (computedCells.length) {
+      let s=Infinity,w=Infinity,n=-Infinity,e=-Infinity;
+      for (const c of computedCells) {
+        if (c.sw[0]<s) s=c.sw[0]; if (c.sw[1]<w) w=c.sw[1];
+        if (c.ne[0]>n) n=c.ne[0]; if (c.ne[1]>e) e=c.ne[1];
+      }
+      if (isFinite(s)) map.fitBounds([[s,w],[n,e]], { padding:[30,30] });
+    }
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 计算网格';
+  }
+};
+
+// ----- export ----------------------------------------------------------
+document.getElementById('btn-export').onclick = () => {
+  if (!computedCells.length) return;
+
+  const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
+  const header = 'geohash,center_lat,center_lon,sw_lat,sw_lon,ne_lat,ne_lon';
+  const rows = computedCells.map(c =>
+    `${c.geohash},${c.center[0]},${c.center[1]},${c.sw[0]},${c.sw[1]},${c.ne[0]},${c.ne[1]}`
+  );
+  const csv = '\uFEFF' + header + '\n' + rows.join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `geohash${precision}_${computedCells.length}cells.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast(`已导出 ${computedCells.length} 条记录`, 'ok');
+};
+
+// ----- helpers ---------------------------------------------------------
+function refreshUI() {
+  document.getElementById('btn-compute').disabled = drawnPolys.length === 0;
+}
+
+function renderCells(cells) {
+  const cnt = document.getElementById('cell-count');
+  const list = document.getElementById('cell-list');
+  const btnExp = document.getElementById('btn-export');
+  cnt.textContent = cells.length;
+  btnExp.disabled = cells.length === 0;
+
+  if (!cells.length) {
+    list.innerHTML = '<div class="empty">无命中网格</div>';
+    return;
+  }
+
+  let html = '';
+  for (const c of cells) {
+    html += `<div class="cell-row" onclick="focusCell(${c.center[0]},${c.center[1]})">
+      <span style="display:flex;align-items:center;">
+        <i class="dot" style="background:#10b981"></i>${c.geohash}
+      </span>
+      <span class="meta">${c.center[0].toFixed(3)}, ${c.center[1].toFixed(3)}</span>
+    </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function focusCell(lat, lon) {
+  map.flyTo([lat, lon], 14, { duration: 0.4 });
+}
+
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = type + ' on';
+  clearTimeout(el._tid);
+  el._tid = setTimeout(() => el.classList.remove('on'), 2800);
+}
+
+refreshUI();
+</script>
+</body>
+</html>
