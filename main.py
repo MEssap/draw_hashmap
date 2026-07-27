@@ -24,6 +24,13 @@ class ComputeRequest(BaseModel):
         le=12,
         description="Geohash precision level (6 or 7 recommended for map use).",
     )
+    min_overlap_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum overlap ratio (0-1) for a cell to be included. "
+        "0 = any intersection; 0.5 = at least 50% coverage.",
+    )
 
 
 class CellInfo(BaseModel):
@@ -31,6 +38,7 @@ class CellInfo(BaseModel):
     sw: list[float]
     ne: list[float]
     center: list[float]
+    overlap_ratio: float
 
 
 class ComputeResponse(BaseModel):
@@ -140,21 +148,29 @@ def compute(request: ComputeRequest) -> ComputeResponse:
             ),
         )
 
-    # Keep only cells that intersect *any* drawn polygon.
+    # Keep only cells whose overlap ratio meets the threshold.
     result: list[CellInfo] = []
+    min_ratio = request.min_overlap_ratio
     for gh in sorted(candidates):
         c_lat, c_lon, lat_err, lon_err = geohash.decode(gh, delta=True)
         cell_box = box(
             c_lon - lon_err, c_lat - lat_err,
             c_lon + lon_err, c_lat + lat_err,
         )
-        if any(p.intersects(cell_box) for p in shapely_polys):
+        cell_area = cell_box.area
+        # Max overlap ratio across all polygons.
+        best_ratio = max(
+            (p.intersection(cell_box).area / cell_area for p in shapely_polys),
+            default=0.0,
+        )
+        if best_ratio >= min_ratio:
             result.append(
                 CellInfo(
                     geohash=gh,
                     sw=[c_lat - lat_err, c_lon - lon_err],
                     ne=[c_lat + lat_err, c_lon + lat_err],
                     center=[c_lat, c_lon],
+                    overlap_ratio=round(best_ratio, 6),
                 )
             )
 

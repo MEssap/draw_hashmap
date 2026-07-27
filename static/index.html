@@ -149,6 +149,12 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
         <label class="prec-opt"><input type="radio" name="precision" value="6" checked><span>6</span></label>
         <label class="prec-opt"><input type="radio" name="precision" value="7"><span>7</span></label>
       </div>
+      <div class="toolbar-row" style="align-items:center; gap:6px;">
+        <span style="font-size:12px; color:#6b7280; white-space:nowrap;">覆盖度≥</span>
+        <input type="range" id="overlap-slider" min="0" max="100" value="0" step="5"
+          style="flex:1; accent-color:#3b82f6;">
+        <span id="overlap-label" style="font-size:13px; font-weight:600; color:#3b82f6; width:32px; text-align:right;">0%</span>
+      </div>
       <div class="toolbar-row">
         <button id="btn-compute" class="btn btn-accent" style="flex:1" disabled>🔍 计算网格</button>
         <button id="btn-clear"   class="btn btn-danger">🗑️ 清除</button>
@@ -190,6 +196,13 @@ let   polyColorIdx = 0;
 
 const COLORS = ['#3b82f6','#ef4444','#f59e0b','#8b5cf6','#10b981','#ec4899'];
 function nextColor(){ return COLORS[polyColorIdx++ % COLORS.length]; }
+
+// ----- overlap slider ---------------------------------------------------
+const overlapSlider = document.getElementById('overlap-slider');
+const overlapLabel  = document.getElementById('overlap-label');
+overlapSlider.addEventListener('input', () => {
+  overlapLabel.textContent = overlapSlider.value + '%';
+});
 
 // ----- map -------------------------------------------------------------
 const map = L.map('map').setView([35, 105], 4);
@@ -271,6 +284,7 @@ document.getElementById('btn-compute').onclick = async () => {
   });
 
   const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
+  const minOverlap = parseInt(overlapSlider.value, 10) / 100;
 
   const btn = document.getElementById('btn-compute');
   btn.disabled = true;
@@ -280,7 +294,7 @@ document.getElementById('btn-compute').onclick = async () => {
     const resp = await fetch('/api/compute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ polygons: polys, precision }),
+      body: JSON.stringify({ polygons: polys, precision, min_overlap_ratio: minOverlap }),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -324,9 +338,9 @@ document.getElementById('btn-export').onclick = () => {
   if (!computedCells.length) return;
 
   const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
-  const header = 'geohash,center_lat,center_lon,sw_lat,sw_lon,ne_lat,ne_lon';
+  const header = 'geohash,overlap_ratio,center_lat,center_lon,sw_lat,sw_lon,ne_lat,ne_lon';
   const rows = computedCells.map(c =>
-    `${c.geohash},${c.center[0]},${c.center[1]},${c.sw[0]},${c.sw[1]},${c.ne[0]},${c.ne[1]}`
+    `${c.geohash},${c.overlap_ratio ?? ''},${c.center[0]},${c.center[1]},${c.sw[0]},${c.sw[1]},${c.ne[0]},${c.ne[1]}`
   );
   const csv = '\uFEFF' + header + '\n' + rows.join('\n');
 
@@ -359,11 +373,12 @@ function renderCells(cells) {
 
   let html = '';
   for (const c of cells) {
+    const pct = (c.overlap_ratio !== undefined ? (c.overlap_ratio * 100).toFixed(0) : '—') + '%';
     html += `<div class="cell-row" onclick="focusCell(${c.center[0]},${c.center[1]})">
       <span style="display:flex;align-items:center;">
         <i class="dot" style="background:#10b981"></i>${c.geohash}
       </span>
-      <span class="meta">${c.center[0].toFixed(3)}, ${c.center[1].toFixed(3)}</span>
+      <span class="meta">${pct} · ${c.center[0].toFixed(3)},${c.center[1].toFixed(3)}</span>
     </div>`;
   }
   list.innerHTML = html;
