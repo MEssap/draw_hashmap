@@ -179,7 +179,7 @@ def compute(request: ComputeRequest) -> ComputeResponse:
             if r > best_ratio:
                 best_ratio = r
                 best_idx = i
-        if best_ratio >= min_ratio:
+        if best_ratio > 0 and best_ratio >= min_ratio:
             region = names[best_idx] if best_idx < len(names) else ""
             result.append(
                 CellInfo(
