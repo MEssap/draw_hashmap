@@ -122,6 +122,20 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
 #toast.ok  { background:#10b981; }
 #toast.err { background:#ef4444; }
 
+/* region label tooltip — always visible, no background */
+.region-label {
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(0,0,0,0.7);
+  text-shadow: 0 0 3px #fff, 0 0 3px #fff;
+  padding: 0 !important;
+  margin-top: -6px !important;
+}
+.region-label::before { display: none !important; }
+
 /* ---- responsive ---- */
 @media (max-width:720px) {
   #app { flex-direction:column; }
@@ -159,6 +173,15 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
         <button id="btn-compute" class="btn btn-accent" style="flex:1" disabled>🔍 计算网格</button>
         <button id="btn-clear"   class="btn btn-danger">🗑️ 清除</button>
       </div>
+      <div class="toolbar-row" id="row-del-sel" style="display:none; flex-direction:column; gap:4px;">
+        <div style="display:flex; gap:4px; align-items:center;">
+          <input id="input-name" type="text" placeholder="区域名"
+            style="flex:1; padding:5px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:13px; outline:none;"
+            onfocus="this.select()">
+          <button id="btn-save-name" class="btn btn-sm" style="white-space:nowrap;">✎ 保存</button>
+        </div>
+        <button id="btn-del-sel" class="btn btn-danger" style="flex:1">🗑️ 删除选中区域</button>
+      </div>
     </div>
 
     <div id="results">
@@ -193,9 +216,13 @@ const drawnPolys = [];        // L.Polygon[]
 let   computedCells = [];     // from API
 let   cellLayer;
 let   polyColorIdx = 0;
+let   selectedLayer = null;   // currently selected polygon
 
 const COLORS = ['#3b82f6','#ef4444','#f59e0b','#8b5cf6','#10b981','#ec4899'];
 function nextColor(){ return COLORS[polyColorIdx++ % COLORS.length]; }
+
+const polygonNames = new Map();  // leaflet_id → region name
+let   nameCounter = 0;
 
 // ----- overlap slider ---------------------------------------------------
 const overlapSlider = document.getElementById('overlap-slider');
@@ -214,6 +241,77 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const drawnItems = new L.FeatureGroup();
 map.addLayer(drawnItems);
 cellLayer = L.layerGroup().addTo(map);
+
+// ----- selection --------------------------------------------------------
+function selectLayer(layer) {
+  if (selectedLayer === layer) return;
+  deselectLayer();
+  selectedLayer = layer;
+  layer._origStyle = {
+    color: layer.options.color,
+    weight: layer.options.weight,
+    fillOpacity: layer.options.fillOpacity,
+  };
+  layer.setStyle({ color: '#f59e0b', weight: 4, fillOpacity: 0.35 });
+  // Populate name input
+  const input = document.getElementById('input-name');
+  input.value = polygonNames.get(layer._leaflet_id) || '';
+  document.getElementById('row-del-sel').style.display = 'flex';
+}
+
+function deselectLayer() {
+  if (!selectedLayer) return;
+  if (selectedLayer._origStyle) {
+    selectedLayer.setStyle(selectedLayer._origStyle);
+  }
+  selectedLayer = null;
+  document.getElementById('row-del-sel').style.display = 'none';
+}
+
+function deleteSelected() {
+  if (!selectedLayer) return;
+  const layer = selectedLayer;
+  const id = layer._leaflet_id;
+  deselectLayer();
+  drawnItems.removeLayer(layer);
+  polygonNames.delete(id);
+  const idx = drawnPolys.indexOf(layer);
+  if (idx >= 0) drawnPolys.splice(idx, 1);
+  refreshUI();
+  toast('已删除选中区域', 'ok');
+}
+
+// Save region name
+document.getElementById('btn-save-name').onclick = () => {
+  if (!selectedLayer) return;
+  const name = document.getElementById('input-name').value.trim() || ('区域 ' + nameCounter);
+  polygonNames.set(selectedLayer._leaflet_id, name);
+  // Update tooltip
+  selectedLayer.unbindTooltip();
+  selectedLayer.bindTooltip(name, { permanent: true, direction: 'center', className: 'region-label' });
+  toast('名称已保存', 'ok');
+};
+
+// Enter key in name input also saves
+document.getElementById('input-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-save-name').click();
+});
+
+drawnItems.on('click', e => {
+  L.DomEvent.stopPropagation(e);
+  selectLayer(e.layer);
+});
+
+map.on('click', () => deselectLayer());
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') deselectLayer();
+  if (e.key === 'Delete' && selectedLayer) {
+    deleteSelected();
+  }
+});
+
+document.getElementById('btn-del-sel').onclick = deleteSelected;
 
 // ----- draw control ----------------------------------------------------
 const drawControl = new L.Control.Draw({
@@ -234,9 +332,15 @@ map.addControl(drawControl);
 
 // ---- events ----
 map.on(L.Draw.Event.CREATED, e => {
+  deselectLayer();
   const layer = e.layer;
   const color = nextColor();
   layer.setStyle({ color, fillColor: color });
+  // Auto-name
+  nameCounter++;
+  const autoName = '区域 ' + nameCounter;
+  polygonNames.set(layer._leaflet_id, autoName);
+  layer.bindTooltip(autoName, { permanent: true, direction: 'center', className: 'region-label' });
   drawnItems.addLayer(layer);
   drawnPolys.push(layer);
   refreshUI();
@@ -245,6 +349,7 @@ map.on(L.Draw.Event.CREATED, e => {
 map.on(L.Draw.Event.DELETED, e => {
   const removed = new Set();
   e.layers.eachLayer(l => removed.add(l._leaflet_id));
+  if (selectedLayer && removed.has(selectedLayer._leaflet_id)) deselectLayer();
   for (let i = drawnPolys.length-1; i >= 0; i--) {
     if (removed.has(drawnPolys[i]._leaflet_id)) drawnPolys.splice(i,1);
   }
@@ -271,6 +376,9 @@ document.getElementById('btn-clear').onclick = () => {
   cellLayer.clearLayers();
   computedCells = [];
   polyColorIdx = 0;
+  polygonNames.clear();
+  nameCounter = 0;
+  deselectLayer();
   document.getElementById('btn-export').disabled = true;
   refreshUI();
   toast('已清除', 'ok');
@@ -282,6 +390,7 @@ document.getElementById('btn-compute').onclick = async () => {
     const ring = Array.isArray(latlngs[0]) ? latlngs[0] : latlngs;
     return ring.map(ll => [ll.lat, ll.lng]);
   });
+  const polyNames = drawnPolys.map(p => polygonNames.get(p._leaflet_id) || '');
 
   const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
   const minOverlap = parseInt(overlapSlider.value, 10) / 100;
@@ -294,7 +403,7 @@ document.getElementById('btn-compute').onclick = async () => {
     const resp = await fetch('/api/compute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ polygons: polys, precision, min_overlap_ratio: minOverlap }),
+      body: JSON.stringify({ polygons: polys, names: polyNames, precision, min_overlap_ratio: minOverlap }),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -309,7 +418,8 @@ document.getElementById('btn-compute').onclick = async () => {
       const rect = L.rectangle([[c.sw[0],c.sw[1]],[c.ne[0],c.ne[1]]], {
         color: '#10b981', weight: 1.5, fillColor: '#10b981', fillOpacity: 0.35,
       });
-      rect.bindTooltip(c.geohash, { direction:'center', className:'cell-tt' });
+      const tip = c.region_name ? `${c.region_name} / ${c.geohash}` : c.geohash;
+      rect.bindTooltip(tip, { direction:'center', className:'cell-tt' });
       cellLayer.addLayer(rect);
     }
 
@@ -338,9 +448,9 @@ document.getElementById('btn-export').onclick = () => {
   if (!computedCells.length) return;
 
   const precision = parseInt(document.querySelector('input[name="precision"]:checked').value, 10);
-  const header = 'geohash,overlap_ratio,center_lat,center_lon,sw_lat,sw_lon,ne_lat,ne_lon';
+  const header = 'region_name,geohash,overlap_ratio,center_lat,center_lon,sw_lat,sw_lon,ne_lat,ne_lon';
   const rows = computedCells.map(c =>
-    `${c.geohash},${c.overlap_ratio ?? ''},${c.center[0]},${c.center[1]},${c.sw[0]},${c.sw[1]},${c.ne[0]},${c.ne[1]}`
+    `${c.region_name || ''},${c.geohash},${c.overlap_ratio ?? ''},${c.center[0]},${c.center[1]},${c.sw[0]},${c.sw[1]},${c.ne[0]},${c.ne[1]}`
   );
   const csv = '\uFEFF' + header + '\n' + rows.join('\n');
 
@@ -374,9 +484,10 @@ function renderCells(cells) {
   let html = '';
   for (const c of cells) {
     const pct = (c.overlap_ratio !== undefined ? (c.overlap_ratio * 100).toFixed(0) : '—') + '%';
+    const rname = c.region_name ? `[${c.region_name}] ` : '';
     html += `<div class="cell-row" onclick="focusCell(${c.center[0]},${c.center[1]})">
       <span style="display:flex;align-items:center;">
-        <i class="dot" style="background:#10b981"></i>${c.geohash}
+        <i class="dot" style="background:#10b981"></i>${rname}${c.geohash}
       </span>
       <span class="meta">${pct} · ${c.center[0].toFixed(3)},${c.center[1].toFixed(3)}</span>
     </div>`;

@@ -18,6 +18,11 @@ class ComputeRequest(BaseModel):
     polygons: list[list[list[float]]] = Field(
         description="List of polygons. Each polygon is a list of [lat, lon] vertices."
     )
+    names: list[str] = Field(
+        default_factory=list,
+        description="Optional region names, one per polygon. "
+        "Shorter than polygons → auto-filled with '区域 N'.",
+    )
     precision: int = Field(
         default=6,
         ge=1,
@@ -39,6 +44,7 @@ class CellInfo(BaseModel):
     ne: list[float]
     center: list[float]
     overlap_ratio: float
+    region_name: str
 
 
 class ComputeResponse(BaseModel):
@@ -129,6 +135,13 @@ def compute(request: ComputeRequest) -> ComputeResponse:
     if not shapely_polys:
         return ComputeResponse(cells=[])
 
+    # Normalise region names.
+    names = list(request.names)
+    while len(names) < len(shapely_polys):
+        names.append(f"区域 {len(names) + 1}")
+    # Truncate to polygon count.
+    names = names[: len(shapely_polys)]
+
     precision = request.precision
 
     # Overall bounding box (lon, lat) order from shapely.
@@ -158,12 +171,16 @@ def compute(request: ComputeRequest) -> ComputeResponse:
             c_lon + lon_err, c_lat + lat_err,
         )
         cell_area = cell_box.area
-        # Max overlap ratio across all polygons.
-        best_ratio = max(
-            (p.intersection(cell_box).area / cell_area for p in shapely_polys),
-            default=0.0,
-        )
+        # Find the polygon with max overlap, track both ratio and index.
+        best_ratio = 0.0
+        best_idx = 0
+        for i, p in enumerate(shapely_polys):
+            r = p.intersection(cell_box).area / cell_area
+            if r > best_ratio:
+                best_ratio = r
+                best_idx = i
         if best_ratio >= min_ratio:
+            region = names[best_idx] if best_idx < len(names) else ""
             result.append(
                 CellInfo(
                     geohash=gh,
@@ -171,6 +188,7 @@ def compute(request: ComputeRequest) -> ComputeResponse:
                     ne=[c_lat + lat_err, c_lon + lat_err],
                     center=[c_lat, c_lon],
                     overlap_ratio=round(best_ratio, 6),
+                    region_name=region,
                 )
             )
 
