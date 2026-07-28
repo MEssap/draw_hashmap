@@ -445,9 +445,18 @@ document.getElementById('btn-compute').onclick = async () => {
 
     // draw cells on map
     cellLayer.clearLayers();
+
+    // 1) gap-free union fill
+    if (data.union_geojson) {
+      L.geoJSON(data.union_geojson, {
+        style: { color: '#10b981', weight: 1.5, fillColor: '#10b981', fillOpacity: 0.35 },
+      }).addTo(cellLayer);
+    }
+
+    // 2) invisible per-cell rectangles — tooltips only
     for (const c of computedCells) {
       const rect = L.rectangle([[c.sw[0],c.sw[1]],[c.ne[0],c.ne[1]]], {
-        color: '#10b981', weight: 1.5, fillColor: '#10b981', fillOpacity: 0.35,
+        color: 'transparent', weight: 0, fillColor: 'transparent', fillOpacity: 0,
       });
       const tip = c.region_name ? `${c.region_name} / ${c.geohash}` : c.geohash;
       rect.bindTooltip(tip, { direction:'center', className:'cell-tt' });

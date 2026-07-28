@@ -4,7 +4,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from shapely.geometry import Polygon, box
+from shapely.geometry import Polygon, box, mapping
+from shapely.ops import unary_union
 import geohash
 
 app = FastAPI(title="Draw Hashmap")
@@ -49,6 +50,7 @@ class CellInfo(BaseModel):
 
 class ComputeResponse(BaseModel):
     cells: list[CellInfo]
+    union_geojson: dict | None = None  # GeoJSON of merged cell polygons
 
 
 # ---------------------------------------------------------------------------
@@ -161,38 +163,44 @@ def compute(request: ComputeRequest) -> ComputeResponse:
             ),
         )
 
-    # Keep only cells whose overlap ratio meets the threshold.
+    # Scan candidates, collect hits + their boxes.
     result: list[CellInfo] = []
+    hit_boxes: list = []
     min_ratio = request.min_overlap_ratio
+
     for gh in sorted(candidates):
         c_lat, c_lon, lat_err, lon_err = geohash.decode(gh, delta=True)
-        cell_box = box(
+        cb = box(
             c_lon - lon_err, c_lat - lat_err,
             c_lon + lon_err, c_lat + lat_err,
         )
-        cell_area = cell_box.area
-        # Find the polygon with max overlap, track both ratio and index.
+        cell_area = cb.area
         best_ratio = 0.0
         best_idx = 0
         for i, p in enumerate(shapely_polys):
-            r = p.intersection(cell_box).area / cell_area
+            r = p.intersection(cb).area / cell_area
             if r > best_ratio:
                 best_ratio = r
                 best_idx = i
         if best_ratio > 0 and best_ratio >= min_ratio:
-            region = names[best_idx] if best_idx < len(names) else ""
-            result.append(
-                CellInfo(
-                    geohash=gh,
-                    sw=[c_lat - lat_err, c_lon - lon_err],
-                    ne=[c_lat + lat_err, c_lon + lat_err],
-                    center=[c_lat, c_lon],
-                    overlap_ratio=round(best_ratio, 6),
-                    region_name=region,
-                )
-            )
+            result.append(CellInfo(
+                geohash=gh,
+                sw=[c_lat - lat_err, c_lon - lon_err],
+                ne=[c_lat + lat_err, c_lon + lat_err],
+                center=[c_lat, c_lon],
+                overlap_ratio=round(best_ratio, 6),
+                region_name=names[best_idx] if best_idx < len(names) else "",
+            ))
+            hit_boxes.append(cb)
 
-    return ComputeResponse(cells=result)
+    # Merge hit boxes into one geometry → gap-free rendering on frontend.
+    union_geojson = None
+    if hit_boxes:
+        merged = unary_union(hit_boxes)
+        if not merged.is_empty:
+            union_geojson = mapping(merged)
+
+    return ComputeResponse(cells=result, union_geojson=union_geojson)
 
 
 # ---------------------------------------------------------------------------
