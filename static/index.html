@@ -136,6 +136,10 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
 }
 .region-label::before { display: none !important; }
 
+/* context menu */
+#ctx-rename:hover { background: #f3f4f6; }
+#ctx-delete:hover { background: #fef2f2; }
+
 /* ---- responsive ---- */
 @media (max-width:720px) {
   #app { flex-direction:column; }
@@ -173,14 +177,9 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
         <button id="btn-compute" class="btn btn-accent" style="flex:1" disabled>🔍 计算网格</button>
         <button id="btn-clear"   class="btn btn-danger">🗑️ 清除</button>
       </div>
-      <div class="toolbar-row" id="row-del-sel" style="display:none; flex-direction:column; gap:4px;">
-        <div style="display:flex; gap:4px; align-items:center;">
-          <input id="input-name" type="text" placeholder="区域名"
-            style="flex:1; padding:5px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:13px; outline:none;"
-            onfocus="this.select()">
-          <button id="btn-save-name" class="btn btn-sm" style="white-space:nowrap;">✎ 保存</button>
-        </div>
-        <button id="btn-del-sel" class="btn btn-danger" style="flex:1">🗑️ 删除选中区域</button>
+      <div class="toolbar-row" id="row-del-sel" style="display:none;">
+        <span style="font-size:12px; color:#6b7280;">已选中</span>
+        <span id="sel-name" style="font-size:13px; font-weight:600; color:#f59e0b;">—</span>
       </div>
     </div>
 
@@ -202,6 +201,12 @@ html, body { height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe
 
   <!-- ============= MAP ============= -->
   <div id="map"></div>
+
+  <!-- ============= CONTEXT MENU ============= -->
+  <div id="ctx-menu" style="display:none; position:fixed; z-index:10000; background:#fff; border:1px solid #e5e7eb; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.12); min-width:140px; overflow:hidden; padding:4px 0;">
+    <div id="ctx-rename" style="padding:8px 14px; cursor:pointer; font-size:13px; color:#374151; display:flex; align-items:center; gap:6px;">✎ 修改名称</div>
+    <div id="ctx-delete" style="padding:8px 14px; cursor:pointer; font-size:13px; color:#ef4444; display:flex; align-items:center; gap:6px; border-top:1px solid #f3f4f6;">🗑️ 删除区域</div>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -242,7 +247,9 @@ const drawnItems = new L.FeatureGroup();
 map.addLayer(drawnItems);
 cellLayer = L.layerGroup().addTo(map);
 
-// ----- selection --------------------------------------------------------
+// ----- selection & context menu ----------------------------------------
+const ctxMenu = document.getElementById('ctx-menu');
+
 function selectLayer(layer) {
   if (selectedLayer === layer) return;
   deselectLayer();
@@ -253,9 +260,7 @@ function selectLayer(layer) {
     fillOpacity: layer.options.fillOpacity,
   };
   layer.setStyle({ color: '#f59e0b', weight: 4, fillOpacity: 0.35 });
-  // Populate name input
-  const input = document.getElementById('input-name');
-  input.value = polygonNames.get(layer._leaflet_id) || '';
+  document.getElementById('sel-name').textContent = polygonNames.get(layer._leaflet_id) || '';
   document.getElementById('row-del-sel').style.display = 'flex';
 }
 
@@ -265,7 +270,18 @@ function deselectLayer() {
     selectedLayer.setStyle(selectedLayer._origStyle);
   }
   selectedLayer = null;
+  hideCtxMenu();
   document.getElementById('row-del-sel').style.display = 'none';
+}
+
+function showCtxMenu(x, y) {
+  ctxMenu.style.left = x + 'px';
+  ctxMenu.style.top  = y + 'px';
+  ctxMenu.style.display = 'block';
+}
+
+function hideCtxMenu() {
+  ctxMenu.style.display = 'none';
 }
 
 function deleteSelected() {
@@ -278,40 +294,55 @@ function deleteSelected() {
   const idx = drawnPolys.indexOf(layer);
   if (idx >= 0) drawnPolys.splice(idx, 1);
   refreshUI();
-  toast('已删除选中区域', 'ok');
+  toast('已删除区域', 'ok');
 }
 
-// Save region name
-document.getElementById('btn-save-name').onclick = () => {
-  if (!selectedLayer) return;
-  const name = document.getElementById('input-name').value.trim() || ('区域 ' + nameCounter);
-  polygonNames.set(selectedLayer._leaflet_id, name);
-  // Update tooltip
-  selectedLayer.unbindTooltip();
-  selectedLayer.bindTooltip(name, { permanent: true, direction: 'center', className: 'region-label' });
-  toast('名称已保存', 'ok');
-};
-
-// Enter key in name input also saves
-document.getElementById('input-name').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('btn-save-name').click();
-});
-
+// Left-click → select
 drawnItems.on('click', e => {
   L.DomEvent.stopPropagation(e);
   selectLayer(e.layer);
 });
 
-map.on('click', () => deselectLayer());
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') deselectLayer();
-  if (e.key === 'Delete' && selectedLayer) {
-    deleteSelected();
-  }
+// Right-click → context menu
+drawnItems.on('contextmenu', e => {
+  L.DomEvent.stopPropagation(e);
+  L.DomEvent.preventDefault(e);
+  selectLayer(e.layer);
+  // Position near cursor, keep within viewport
+  const px = Math.min(e.originalEvent.clientX, window.innerWidth - 160);
+  const py = Math.min(e.originalEvent.clientY, window.innerHeight - 80);
+  showCtxMenu(px, py);
 });
 
-document.getElementById('btn-del-sel').onclick = deleteSelected;
+// Context menu — rename
+document.getElementById('ctx-rename').onclick = () => {
+  if (!selectedLayer) return;
+  hideCtxMenu();
+  const oldName = polygonNames.get(selectedLayer._leaflet_id) || '';
+  const newName = (prompt('修改区域名称：', oldName) || '').trim();
+  if (newName && newName !== oldName) {
+    polygonNames.set(selectedLayer._leaflet_id, newName);
+    selectedLayer.unbindTooltip();
+    selectedLayer.bindTooltip(newName, { permanent: true, direction: 'center', className: 'region-label' });
+    document.getElementById('sel-name').textContent = newName;
+    toast('名称已更新', 'ok');
+  }
+};
+
+// Context menu — delete
+document.getElementById('ctx-delete').onclick = () => {
+  hideCtxMenu();
+  deleteSelected();
+};
+
+// Hide context menu on click elsewhere
+map.on('click',  () => { deselectLayer(); hideCtxMenu(); });
+map.on('contextmenu', () => { hideCtxMenu(); });
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { deselectLayer(); hideCtxMenu(); }
+  if (e.key === 'Delete' && selectedLayer) deleteSelected();
+});
 
 // ----- draw control ----------------------------------------------------
 const drawControl = new L.Control.Draw({
